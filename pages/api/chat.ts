@@ -1,23 +1,21 @@
+import { NextApiRequest, NextApiResponse } from 'next';
+
 import { DEFAULT_SYSTEM_PROMPT, DEFAULT_TEMPERATURE } from '@/utils/app/const';
-import { OpenAIError, OpenAIStream } from '@/utils/server';
+import { OpenAIStream } from '@/utils/server';
 
 import { ChatBody, Message } from '@/types/chat';
 
-// @ts-expect-error
-import wasm from '../../node_modules/@dqbd/tiktoken/lite/tiktoken_bg.wasm?module';
-
+import { Tiktoken } from '@dqbd/tiktoken';
 import tiktokenModel from '@dqbd/tiktoken/encoders/cl100k_base.json';
-import { Tiktoken, init } from '@dqbd/tiktoken/lite/init';
 
 export const config = {
-  runtime: 'edge',
+  runtime: 'nodejs',
 };
 
-const handler = async (req: Request): Promise<Response> => {
+const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   try {
-    const { model, messages, key, prompt, temperature } = (await req.json()) as ChatBody;
+    const { model, messages, key, prompt, temperature } = req.body as ChatBody;
 
-    await init((imports) => WebAssembly.instantiate(wasm, imports));
     const encoding = new Tiktoken(
       tiktokenModel.bpe_ranks,
       tiktokenModel.special_tokens,
@@ -52,16 +50,19 @@ const handler = async (req: Request): Promise<Response> => {
 
     encoding.free();
 
-    const stream = await OpenAIStream(model, promptToSend, temperatureToUse, key, messagesToSend);
-
-    return new Response(stream);
+    return await OpenAIStream(
+      {
+        model,
+        systemPrompt: promptToSend,
+        temperature: temperatureToUse,
+        key,
+        messages: messagesToSend,
+      },
+      res,
+    );
   } catch (error) {
     console.error(error);
-    if (error instanceof OpenAIError) {
-      return new Response('Error', { status: 500, statusText: error.message });
-    } else {
-      return new Response('Error', { status: 500 });
-    }
+    return res.status(500).json(error);
   }
 };
 

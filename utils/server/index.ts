@@ -1,7 +1,15 @@
+import { NextApiResponse } from 'next';
+
 import { Message } from '@/types/chat';
 import { OpenAIModel } from '@/types/openai';
 
-import { AZURE_DEPLOYMENT_ID, OPENAI_API_HOST, OPENAI_API_TYPE, OPENAI_API_VERSION, OPENAI_ORGANIZATION } from '../app/const';
+import {
+  AZURE_DEPLOYMENT_ID,
+  OPENAI_API_HOST,
+  OPENAI_API_TYPE,
+  OPENAI_API_VERSION,
+  OPENAI_ORGANIZATION,
+} from '../app/const';
 
 import {
   ParsedEvent,
@@ -24,12 +32,16 @@ export class OpenAIError extends Error {
 }
 
 export const OpenAIStream = async (
-  model: OpenAIModel,
-  systemPrompt: string,
-  temperature : number,
-  key: string,
-  messages: Message[],
+  config: {
+    model: OpenAIModel;
+    systemPrompt: string;
+    temperature: number;
+    key: string;
+    messages: Message[];
+  },
+  apiResponse: NextApiResponse,
 ) => {
+  const { model, systemPrompt, temperature, key, messages } = config;
   let url = `${OPENAI_API_HOST}/v1/chat/completions`;
   if (OPENAI_API_TYPE === 'azure') {
     url = `${OPENAI_API_HOST}/openai/deployments/${AZURE_DEPLOYMENT_ID}/chat/completions?api-version=${OPENAI_API_VERSION}`;
@@ -38,18 +50,19 @@ export const OpenAIStream = async (
     headers: {
       'Content-Type': 'application/json',
       ...(OPENAI_API_TYPE === 'openai' && {
-        Authorization: `Bearer ${key ? key : process.env.OPENAI_API_KEY}`
+        Authorization: `Bearer ${key ? key : process.env.OPENAI_API_KEY}`,
       }),
       ...(OPENAI_API_TYPE === 'azure' && {
-        'api-key': `${key ? key : process.env.OPENAI_API_KEY}`
+        'api-key': `${key ? key : process.env.OPENAI_API_KEY}`,
       }),
-      ...((OPENAI_API_TYPE === 'openai' && OPENAI_ORGANIZATION) && {
-        'OpenAI-Organization': OPENAI_ORGANIZATION,
-      }),
+      ...(OPENAI_API_TYPE === 'openai' &&
+        OPENAI_ORGANIZATION && {
+          'OpenAI-Organization': OPENAI_ORGANIZATION,
+        }),
     },
     method: 'POST',
     body: JSON.stringify({
-      ...(OPENAI_API_TYPE === 'openai' && {model: model.id}),
+      ...(OPENAI_API_TYPE === 'openai' && { model: model.id }),
       messages: [
         {
           role: 'system',
@@ -84,34 +97,28 @@ export const OpenAIStream = async (
     }
   }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const onParse = (event: ParsedEvent | ReconnectInterval) => {
-        if (event.type === 'event') {
-          const data = event.data;
-
-          try {
-            const json = JSON.parse(data);
-            if (json.choices[0].finish_reason != null) {
-              controller.close();
-              return;
-            }
-            const text = json.choices[0].delta.content;
-            const queue = encoder.encode(text);
-            controller.enqueue(queue);
-          } catch (e) {
-            controller.error(e);
-          }
+  const onParse = (event: ParsedEvent | ReconnectInterval) => {
+    if (event.type === 'event') {
+      const data = event.data;
+      try {
+        const json = JSON.parse(data);
+        if (json.choices[0].finish_reason != null) {
+          apiResponse.end();
+          return;
         }
-      };
-
-      const parser = createParser(onParse);
-
-      for await (const chunk of res.body as any) {
-        parser.feed(decoder.decode(chunk));
+        const text = json.choices[0].delta.content;
+        const queue = encoder.encode(text);
+        apiResponse.write(queue);
+      } catch (e) {
+        apiResponse.status(500).end();
       }
-    },
-  });
+    }
+  };
 
-  return stream;
+  const parser = createParser(onParse);
+
+  for await (const chunk of res.body as any) {
+    parser.feed(decoder.decode(chunk));
+  }
+  return res;
 };
